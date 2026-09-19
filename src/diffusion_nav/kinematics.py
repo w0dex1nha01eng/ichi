@@ -4,8 +4,6 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class Pose2D:
-    """Robot_pose in the 2D frame"""
-
     x: float
     y: float
     theta: float
@@ -13,7 +11,6 @@ class Pose2D:
 
 @dataclass(frozen=True, slots=True)
 class Twist2D:
-    """Robot body velocity"""
 
     linear_velocity: float
     angular_velocity: float
@@ -21,7 +18,6 @@ class Twist2D:
 
 @dataclass(frozen=True, slots=True)
 class DifferentialDrive:
-    """parameter of differential-car"""
 
     wheel_radius: float
     wheel_separation: float
@@ -50,7 +46,6 @@ def wrap_angle(angle: float) -> float:
 
 
 def integrate_pose(pose: Pose2D, twist: Twist2D, dt: float) -> Pose2D:
-    """advance"""
     if dt <= 0:
         raise ValueError("dt must be positive")
     return Pose2D(
