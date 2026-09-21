@@ -33,7 +33,7 @@ def robot_in_collision(pose:Pose2D, radius, obstacles, width, height) -> bool:
         raise ValueError("radius should be positive")
     if min(height, width) <=0:
         raise ValueError("this map doesn't exist")
-    if min(pose.x-radius,pose.x+radius,pose.y-radius,pose.y+radius)<=0:
+    if min(pose.x-radius,pose.y-radius)<=0 or pose.x >= width or pose.y >= height :
         return(True)
 
     for rectangle in obstacles:

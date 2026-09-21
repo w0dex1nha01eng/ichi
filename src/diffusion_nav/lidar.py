@@ -7,7 +7,7 @@ def scan_lidar(pose, obstacles, width, height, num_rays, max_range, sample_step)
     if min(num_rays, max_range, sample_step) <= 0:
         raise ValueError("They must be positive")
 
-    SafetySpace = np.full(num_rays, max_range, dtype=np.float32)
+    lidar_distances = np.full(num_rays, max_range, dtype=np.float32)
 
     num_steps = math.ceil(max_range / sample_step)
     for i in range(num_rays):
@@ -24,7 +24,7 @@ def scan_lidar(pose, obstacles, width, height, num_rays, max_range, sample_step)
                 for rectangle in obstacles
             )
             if hit_wall or hit_obstacle:
-                SafetySpace[i] = d
+                lidar_distances[i] = d
                 break
 
-    return SafetySpace
+    return lidar_distances
