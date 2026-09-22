@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+
 from .kinematics import Pose2D
+
 
 @dataclass(frozen=True, slots=True)
 class Rectangle:
