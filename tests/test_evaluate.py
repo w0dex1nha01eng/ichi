@@ -4,6 +4,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from diffusion_nav.collision import Rectangle
 from diffusion_nav.dataset import Normalizer
 from diffusion_nav.env import NavigationEnv
 from diffusion_nav.evaluate import (
@@ -14,8 +15,32 @@ from diffusion_nav.evaluate import (
     update_observation_history,
 )
 from diffusion_nav.kinematics import Pose2D
-from diffusion_nav.models import BCOneStep
+from diffusion_nav.models import BC_1
 from diffusion_nav.training import save_bc_checkpoint
+
+
+def create_rollout_environment(
+    obstacles: list[Rectangle] | None = None,
+    max_steps: int = 30,
+    goal: tuple[float, float] = (2.0, 2.0),
+) -> NavigationEnv:
+    """Build a small environment whose termination reason is easy to control."""
+    return NavigationEnv(
+        width=4.0,
+        height=4.0,
+        robot_radius=0.15,
+        start_pose=Pose2D(x=1.0, y=2.0, theta=0.0),
+        goal=goal,
+        obstacles=obstacles or [],
+        dt=0.1,
+        max_steps=max_steps,
+        goal_radius=0.15,
+        num_rays=8,
+        lidar_max_range=3.0,
+        lidar_sample_step=0.1,
+        max_linear_velocity=1.0,
+        max_angular_velocity=2.0,
+    )
 
 
 def create_constant_policy(
@@ -24,7 +49,7 @@ def create_constant_policy(
     action: np.ndarray,
 ) -> BCPolicy:
     """Create a deterministic policy whose denormalized output equals the requested action."""
-    model = BCOneStep(
+    model = BC_1(
         obs_dim=obs_dim,
         obs_horizon=obs_horizon,
         hidden_dim=16,
@@ -72,7 +97,7 @@ def test_observation_history_repeats_initial_sample_and_shifts_forward() -> None
 def test_bc_policy_denormalizes_and_clips_network_output() -> None:
     """Inference must convert normalized predictions back into legal environment actions."""
     # Arrange
-    model = BCOneStep(obs_dim=4, obs_horizon=2, hidden_dim=8)
+    model = BC_1(obs_dim=4, obs_horizon=2, hidden_dim=8)
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.zero_()
@@ -105,22 +130,7 @@ def test_bc_policy_denormalizes_and_clips_network_output() -> None:
 def test_policy_rollout_reaches_nearby_goal_without_obstacles() -> None:
     """A constant straight-driving BC policy should complete a simple closed-loop rollout."""
     # Arrange
-    environment = NavigationEnv(
-        width=4.0,
-        height=4.0,
-        robot_radius=0.15,
-        start_pose=Pose2D(x=1.0, y=2.0, theta=0.0),
-        goal=(2.0, 2.0),
-        obstacles=[],
-        dt=0.1,
-        max_steps=30,
-        goal_radius=0.15,
-        num_rays=8,
-        lidar_max_range=3.0,
-        lidar_sample_step=0.1,
-        max_linear_velocity=1.0,
-        max_angular_velocity=2.0,
-    )
+    environment = create_rollout_environment()
     observation_dim = int(environment.observation_space.shape[0])
     policy = create_constant_policy(
         obs_dim=observation_dim,
@@ -140,6 +150,58 @@ def test_policy_rollout_reaches_nearby_goal_without_obstacles() -> None:
     assert result.actions.shape == (result.steps, 2)
     assert result.states.shape == (result.steps, 3)
     assert result.rewards.shape == (result.steps,)
+
+
+def test_policy_rollout_reports_collision_failure() -> None:
+    """A policy that drives into an obstacle should end by collision, not timeout."""
+    # Arrange
+    obstacle = Rectangle(xmin=1.35, ymin=1.5, xmax=1.60, ymax=2.5)
+    environment = create_rollout_environment(
+        obstacles=[obstacle],
+        goal=(3.5, 2.0),
+    )
+    observation_dim = int(environment.observation_space.shape[0])
+    policy = create_constant_policy(
+        obs_dim=observation_dim,
+        obs_horizon=2,
+        action=np.array([1.0, 0.0], dtype=np.float32),
+    )
+
+    # Act
+    result = run_policy_episode(environment, policy)
+
+    # Assert
+    assert result.success is False
+    assert result.collision is True
+    assert result.truncated is False
+    assert result.steps == 2
+    assert result.observations.shape[0] == result.actions.shape[0]
+    assert result.actions[-1, 0] == np.float32(1.0)
+
+
+def test_policy_rollout_reports_step_limit_failure() -> None:
+    """A stationary policy should end by the configured time limit without collision."""
+    # Arrange
+    environment = create_rollout_environment(
+        max_steps=3,
+        goal=(3.5, 2.0),
+    )
+    observation_dim = int(environment.observation_space.shape[0])
+    policy = create_constant_policy(
+        obs_dim=observation_dim,
+        obs_horizon=2,
+        action=np.array([0.0, 0.0], dtype=np.float32),
+    )
+
+    # Act
+    result = run_policy_episode(environment, policy)
+
+    # Assert
+    assert result.success is False
+    assert result.collision is False
+    assert result.truncated is True
+    assert result.steps == environment.max_steps
+    assert result.actions.shape == (environment.max_steps, 2)
 
 
 def test_load_bc_policy_reconstructs_model_and_normalizer(tmp_path: Path) -> None:

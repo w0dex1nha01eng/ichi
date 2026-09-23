@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from diffusion_nav.models import BCOneStep
+from diffusion_nav.models import BC_1
 
 OBSERVATION_DIMENSION = 22
 OBSERVATION_HORIZON = 2
@@ -9,9 +9,9 @@ BATCH_SIZE = 8
 
 
 @pytest.fixture
-def behavior_cloning_model() -> BCOneStep:
+def behavior_cloning_model() -> BC_1:
     """Return a small BC-1 model suitable for fast unit tests."""
-    return BCOneStep(
+    return BC_1(
         obs_dim=OBSERVATION_DIMENSION,
         obs_horizon=OBSERVATION_HORIZON,
         hidden_dim=32,
@@ -19,7 +19,7 @@ def behavior_cloning_model() -> BCOneStep:
 
 
 def test_bc_one_step_maps_observation_history_to_single_action(
-    behavior_cloning_model: BCOneStep,
+    behavior_cloning_model: BC_1,
 ) -> None:
     """One observation history should produce exactly one linear-angular action pair."""
     # Arrange
@@ -40,7 +40,7 @@ def test_bc_one_step_maps_observation_history_to_single_action(
 
 
 def test_bc_one_step_supports_gradient_based_optimization(
-    behavior_cloning_model: BCOneStep,
+    behavior_cloning_model: BC_1,
 ) -> None:
     """The supervised MSE objective should backpropagate through every linear layer."""
     # Arrange
@@ -87,7 +87,7 @@ def test_bc_one_step_rejects_invalid_dimensions(
     """All network dimensions must be genuine positive integers."""
     # Act and assert
     with pytest.raises(ValueError, match="must be a positive integer"):
-        BCOneStep(
+        BC_1(
             obs_dim=obs_dim,
             obs_horizon=obs_horizon,
             hidden_dim=hidden_dim,
@@ -103,7 +103,7 @@ def test_bc_one_step_rejects_invalid_dimensions(
     ],
 )
 def test_bc_one_step_rejects_incompatible_input_shape(
-    behavior_cloning_model: BCOneStep,
+    behavior_cloning_model: BC_1,
     invalid_observations: torch.Tensor,
 ) -> None:
     """Malformed batches should fail before they reach the neural network layers."""
