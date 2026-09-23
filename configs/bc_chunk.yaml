@@ -1,0 +1,24 @@
+data:
+  train_path: data/train_expert.npz
+  validation_path: data/validation_expert.npz
+  obs_horizon: 8
+  pred_horizon: 32
+  batch_size: 64
+  num_workers: 0
+
+model:
+  type: BC_Chunk
+  hidden_dim: 256
+
+training:
+  seed: 0
+  epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.000001
+  device: auto
+
+evaluation:
+  action_horizon: 4
+
+output:
+  checkpoint_path: checkpoints/bc_chunk.pt

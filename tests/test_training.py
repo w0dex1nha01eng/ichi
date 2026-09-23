@@ -11,15 +11,18 @@ from diffusion_nav.dataset import (
     load_expert_dataset,
     save_expert_dataset,
 )
-from diffusion_nav.models import BC_1
+from diffusion_nav.models import BC_1, BC_Chunk
 from diffusion_nav.training import (
     choose_device,
     load_bc_checkpoint,
     save_bc_checkpoint,
     set_seed,
     train_bc,
+    train_bc_chunk,
+    train_bc_chunk_epoch,
     train_bc_epoch,
     validate_bc,
+    validate_bc_chunk,
 )
 
 
@@ -38,6 +41,36 @@ class LinearImitationDataset(Dataset):
             dim=1,
         )
         self.actions = expert_actions.unsqueeze(1)
+
+    def __len__(self) -> int:
+        return len(self.observations)
+
+    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
+        return {
+            "obs": self.observations[index],
+            "action": self.actions[index],
+        }
+
+
+class ChunkImitationDataset(Dataset):
+    """Synthetic demonstrations with distinct expert actions across the horizon."""
+
+    def __init__(self, sample_count: int = 48, pred_horizon: int = 4) -> None:
+        generator = torch.Generator().manual_seed(31)
+        self.observations = torch.randn(sample_count, 2, 4, generator=generator)
+        current_observation = self.observations[:, -1]
+        future_actions = []
+        for horizon_index in range(pred_horizon):
+            offset = horizon_index * 0.05
+            horizon_actions = torch.stack(
+                [
+                    0.7 * current_observation[:, 0] - 0.2 * current_observation[:, 1] + offset,
+                    -0.4 * current_observation[:, 2] + 0.5 * current_observation[:, 3] - offset,
+                ],
+                dim=1,
+            )
+            future_actions.append(horizon_actions)
+        self.actions = torch.stack(future_actions, dim=1)
 
     def __len__(self) -> int:
         return len(self.observations)
@@ -279,3 +312,110 @@ def test_train_bc_rejects_shared_map_seeds(tmp_path: Path) -> None:
     # Act and assert
     with pytest.raises(ValueError, match=r"share map seeds: \[303\]"):
         train_bc(config)
+
+
+def test_bc_chunk_training_uses_every_action_in_the_horizon() -> None:
+    """Training and validation should compare the complete predicted sequence with its labels."""
+    # Arrange
+    set_seed(29)
+    model = BC_Chunk(obs_dim=4, obs_horizon=2, pred_horizon=4, hidden_dim=32)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    dataloader = DataLoader(ChunkImitationDataset(), batch_size=12, shuffle=False)
+    parameters_before_training = [parameter.detach().clone() for parameter in model.parameters()]
+
+    # Act
+    training_loss = train_bc_chunk_epoch(
+        model=model,
+        dataloader=dataloader,
+        optimizer=optimizer,
+        device="cpu",
+    )
+    validation_loss = validate_bc_chunk(model, dataloader, device="cpu")
+
+    # Assert
+    parameters_after_training = list(model.parameters())
+    assert np.isfinite(training_loss)
+    assert np.isfinite(validation_loss)
+    assert any(
+        not torch.equal(before, after)
+        for before, after in zip(parameters_before_training, parameters_after_training)
+    )
+
+
+def test_bc_chunk_can_overfit_small_action_sequence_dataset() -> None:
+    """A compact deterministic chunk dataset should be memorized by the Gate7 model."""
+    # Arrange
+    set_seed(37)
+    model = BC_Chunk(obs_dim=4, obs_horizon=2, pred_horizon=4, hidden_dim=64)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+    dataloader = DataLoader(
+        ChunkImitationDataset(sample_count=32, pred_horizon=4),
+        batch_size=32,
+    )
+    initial_loss = validate_bc_chunk(model, dataloader, device="cpu")
+
+    # Act
+    for _ in range(180):
+        train_bc_chunk_epoch(
+            model=model,
+            dataloader=dataloader,
+            optimizer=optimizer,
+            device="cpu",
+        )
+    final_loss = validate_bc_chunk(model, dataloader, device="cpu")
+
+    # Assert
+    assert final_loss < initial_loss * 0.01
+    assert final_loss < 1e-3
+
+
+def test_train_bc_chunk_runs_end_to_end_and_saves_chunk_checkpoint(
+    tmp_path: Path,
+) -> None:
+    """Gate7 training should learn full action sequences and save reconstructable metadata."""
+    # Arrange
+    training_dataset_path = tmp_path / "chunk_training.npz"
+    validation_dataset_path = tmp_path / "chunk_validation.npz"
+    checkpoint_path = tmp_path / "checkpoints" / "bc_chunk.pt"
+    save_expert_dataset(
+        [create_serializable_episode(sample_count=24, map_seed=401)],
+        training_dataset_path,
+    )
+    save_expert_dataset(
+        [create_serializable_episode(sample_count=20, map_seed=502)],
+        validation_dataset_path,
+    )
+    config = {
+        "data": {
+            "train_path": str(training_dataset_path),
+            "validation_path": str(validation_dataset_path),
+            "obs_horizon": 2,
+            "pred_horizon": 4,
+            "batch_size": 8,
+            "num_workers": 0,
+        },
+        "model": {"hidden_dim": 32},
+        "training": {
+            "seed": 41,
+            "epochs": 2,
+            "learning_rate": 0.01,
+            "weight_decay": 0.0,
+            "device": "cpu",
+        },
+        "output": {"checkpoint_path": str(checkpoint_path)},
+    }
+
+    # Act
+    model, normalizer, history = train_bc_chunk(config)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+
+    # Assert
+    assert isinstance(model, BC_Chunk)
+    assert model.pred_horizon == 4
+    assert isinstance(normalizer, Normalizer)
+    assert len(history) == 2
+    assert checkpoint["policy_type"] == "bc_chunk"
+    assert checkpoint["model_config"]["pred_horizon"] == 4
+    assert checkpoint_path.is_file()
+    assert all(np.isfinite(epoch["train_loss"]) for epoch in history)
+    assert all(np.isfinite(epoch["validation_loss"]) for epoch in history)
