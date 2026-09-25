@@ -1,25 +1,22 @@
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
-from torch import nn
 
 from diffusion_nav.collision import Rectangle
 from diffusion_nav.dataset import Normalizer
 from diffusion_nav.env import NavigationEnv
 from diffusion_nav.evaluate import (
     BCChunkPolicy,
-    BCPolicy,
     initialize_observation_history,
     load_bc_chunk_policy,
-    load_bc_policy,
     run_chunk_policy_episode,
-    run_policy_episode,
     update_observation_history,
 )
 from diffusion_nav.kinematics import Pose2D
-from diffusion_nav.models import BC_1, BC_Chunk
-from diffusion_nav.training import save_bc_checkpoint, save_bc_chunk_checkpoint
+from diffusion_nav.models import BC_Chunk
+from diffusion_nav.training import save_bc_chunk_checkpoint
 
 
 def create_rollout_environment(
@@ -43,36 +40,6 @@ def create_rollout_environment(
         lidar_sample_step=0.1,
         max_linear_velocity=1.0,
         max_angular_velocity=2.0,
-    )
-
-
-def create_constant_policy(
-    obs_dim: int,
-    obs_horizon: int,
-    action: np.ndarray,
-) -> BCPolicy:
-    """Create a deterministic policy whose denormalized output equals the requested action."""
-    model = BC_1(
-        obs_dim=obs_dim,
-        obs_horizon=obs_horizon,
-        hidden_dim=16,
-    )
-    with torch.no_grad():
-        for parameter in model.parameters():
-            parameter.zero_()
-
-    normalizer = Normalizer(
-        observation_mean=np.zeros(obs_dim, dtype=np.float32),
-        observation_std=np.ones(obs_dim, dtype=np.float32),
-        action_mean=np.asarray(action, dtype=np.float32),
-        action_std=np.ones(2, dtype=np.float32),
-    )
-    return BCPolicy(
-        model=model,
-        normalizer=normalizer,
-        action_low=np.array([0.0, -2.0], dtype=np.float32),
-        action_high=np.array([1.0, 2.0], dtype=np.float32),
-        device="cpu",
     )
 
 
@@ -129,152 +96,6 @@ def test_observation_history_repeats_initial_sample_and_shifts_forward() -> None
     )
 
 
-def test_bc_policy_denormalizes_and_clips_network_output() -> None:
-    """Inference must convert normalized predictions back into legal environment actions."""
-    # Arrange
-    model = BC_1(obs_dim=4, obs_horizon=2, hidden_dim=8)
-    with torch.no_grad():
-        for parameter in model.parameters():
-            parameter.zero_()
-        final_layer = model.network[-1]
-        assert isinstance(final_layer, nn.Linear)
-        final_layer.bias.copy_(torch.tensor([10.0, -10.0]))
-
-    normalizer = Normalizer(
-        observation_mean=np.zeros(4, dtype=np.float32),
-        observation_std=np.ones(4, dtype=np.float32),
-        action_mean=np.array([0.5, 0.0], dtype=np.float32),
-        action_std=np.array([0.25, 0.5], dtype=np.float32),
-    )
-    policy = BCPolicy(
-        model=model,
-        normalizer=normalizer,
-        action_low=np.array([0.0, -1.0], dtype=np.float32),
-        action_high=np.array([1.0, 1.0], dtype=np.float32),
-    )
-    observation_history = np.zeros((2, 4), dtype=np.float32)
-
-    # Act
-    action = policy.act(observation_history)
-
-    # Assert
-    np.testing.assert_allclose(action, np.array([1.0, -1.0], dtype=np.float32))
-    assert action.dtype == np.float32
-
-
-def test_policy_rollout_reaches_nearby_goal_without_obstacles() -> None:
-    """A constant straight-driving BC policy should complete a simple closed-loop rollout."""
-    # Arrange
-    environment = create_rollout_environment()
-    observation_dim = int(environment.observation_space.shape[0])
-    policy = create_constant_policy(
-        obs_dim=observation_dim,
-        obs_horizon=2,
-        action=np.array([0.5, 0.0], dtype=np.float32),
-    )
-
-    # Act
-    result = run_policy_episode(environment, policy)
-
-    # Assert
-    assert result.success is True
-    assert result.collision is False
-    assert result.truncated is False
-    assert 1 <= result.steps < environment.max_steps
-    assert result.observations.shape == (result.steps, observation_dim)
-    assert result.actions.shape == (result.steps, 2)
-    assert result.states.shape == (result.steps, 3)
-    assert result.rewards.shape == (result.steps,)
-
-
-def test_policy_rollout_reports_collision_failure() -> None:
-    """A policy that drives into an obstacle should end by collision, not timeout."""
-    # Arrange
-    obstacle = Rectangle(xmin=1.35, ymin=1.5, xmax=1.60, ymax=2.5)
-    environment = create_rollout_environment(
-        obstacles=[obstacle],
-        goal=(3.5, 2.0),
-    )
-    observation_dim = int(environment.observation_space.shape[0])
-    policy = create_constant_policy(
-        obs_dim=observation_dim,
-        obs_horizon=2,
-        action=np.array([1.0, 0.0], dtype=np.float32),
-    )
-
-    # Act
-    result = run_policy_episode(environment, policy)
-
-    # Assert
-    assert result.success is False
-    assert result.collision is True
-    assert result.truncated is False
-    assert result.steps == 2
-    assert result.observations.shape[0] == result.actions.shape[0]
-    assert result.actions[-1, 0] == np.float32(1.0)
-
-
-def test_policy_rollout_reports_step_limit_failure() -> None:
-    """A stationary policy should end by the configured time limit without collision."""
-    # Arrange
-    environment = create_rollout_environment(
-        max_steps=3,
-        goal=(3.5, 2.0),
-    )
-    observation_dim = int(environment.observation_space.shape[0])
-    policy = create_constant_policy(
-        obs_dim=observation_dim,
-        obs_horizon=2,
-        action=np.array([0.0, 0.0], dtype=np.float32),
-    )
-
-    # Act
-    result = run_policy_episode(environment, policy)
-
-    # Assert
-    assert result.success is False
-    assert result.collision is False
-    assert result.truncated is True
-    assert result.steps == environment.max_steps
-    assert result.actions.shape == (environment.max_steps, 2)
-
-
-def test_load_bc_policy_reconstructs_model_and_normalizer(tmp_path: Path) -> None:
-    """A Gate6 checkpoint should be directly usable by the evaluation policy loader."""
-    # Arrange
-    source_policy = create_constant_policy(
-        obs_dim=4,
-        obs_horizon=2,
-        action=np.array([0.4, -0.2], dtype=np.float32),
-    )
-    optimizer = torch.optim.AdamW(source_policy.model.parameters(), lr=1e-3)
-    checkpoint_path = tmp_path / "bc_policy.pt"
-    save_bc_checkpoint(
-        checkpoint_path=checkpoint_path,
-        model=source_policy.model,
-        optimizer=optimizer,
-        normalizer=source_policy.normalizer,
-        epoch=1,
-        metrics={"train_loss": 0.0, "validation_loss": 0.0},
-    )
-
-    # Act
-    loaded_policy = load_bc_policy(
-        checkpoint_path=checkpoint_path,
-        action_low=np.array([0.0, -1.0], dtype=np.float32),
-        action_high=np.array([1.0, 1.0], dtype=np.float32),
-        device="cpu",
-    )
-    loaded_action = loaded_policy.act(np.zeros((2, 4), dtype=np.float32))
-
-    # Assert
-    np.testing.assert_allclose(
-        loaded_action,
-        np.array([0.4, -0.2], dtype=np.float32),
-        atol=1e-6,
-    )
-
-
 def test_bc_chunk_policy_returns_denormalized_action_sequence() -> None:
     """Chunk inference should preserve both the prediction horizon and action dimensions."""
     # Arrange
@@ -311,7 +132,13 @@ def test_chunk_policy_executes_receding_action_chunks_until_success() -> None:
     )
 
     # Act
-    result = run_chunk_policy_episode(environment, policy, action_horizon=2)
+    captured_status = []
+    result = run_chunk_policy_episode(
+        environment,
+        policy,
+        action_horizon=2,
+        frame_callback=lambda env, status: captured_status.append((env.step_count, status)),
+    )
 
     # Assert
     assert result.success is True
@@ -321,6 +148,23 @@ def test_chunk_policy_executes_receding_action_chunks_until_success() -> None:
     assert result.observations.shape[0] == result.actions.shape[0]
     assert result.states.shape == (result.steps, 3)
     assert result.rewards.shape == (result.steps,)
+    assert captured_status[0] == (0, "running")
+    assert captured_status[-1] == (result.steps, "success")
+    assert len(captured_status) == result.steps + 1
+
+
+def test_pygame_renderer_returns_rgb_frame() -> None:
+    """The off-screen Pygame renderer should return one RGB image for video encoding."""
+    pytest.importorskip("pygame")
+    from diffusion_nav.rendering import PygameRenderer
+
+    environment = create_rollout_environment()
+    renderer = PygameRenderer(size=(320, 240))
+
+    frame = renderer.render(environment, action_horizon=2, status="running", trajectory=[(1.0, 2.0)])
+
+    assert frame.shape == (240, 320, 3)
+    assert frame.dtype == np.uint8
 
 
 def test_chunk_policy_stops_remaining_actions_after_collision() -> None:

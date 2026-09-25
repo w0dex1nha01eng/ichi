@@ -27,6 +27,9 @@ checkpoints/
 wandb/
 runs/
 
+# Generated artifacts
+/artifacts/
+
 # Model files
 *.pt
 *.pth
@@ -37,3 +40,5 @@ runs/
 .idea/
 .DS_Store
 Thumbs.db
+
+/configs/

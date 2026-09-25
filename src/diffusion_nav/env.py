@@ -18,10 +18,9 @@ from .observation import build_observation
 class NavigationEnv(gym.Env):
     metadata: ClassVar[dict[str, list[str]]] = {"render_modes": []}
 
-    def __init__(self,width: float,height: float,robot_radius: float,start_pose: Pose2D,goal: tuple[float, float],obstacles: list[Rectangle],*,
-        dt: float = 0.1,max_steps: int = 300,goal_radius: float = 0.3,num_rays: int = 16,lidar_max_range: float = 5.0,lidar_sample_step: float = 0.05,
-        max_linear_velocity: float = 1.0,max_angular_velocity: float = 2.0) -> None:
-        
+    def __init__(self, width: float, height: float, robot_radius: float, start_pose: Pose2D, goal: tuple[float, float], obstacles: list[Rectangle], *,
+                 dt: float = 0.1, max_steps: int = 300, goal_radius: float = 0.3, num_rays: int = 16, lidar_max_range: float = 5.0,
+                 lidar_sample_step: float = 0.05, max_linear_velocity: float = 1.0, max_angular_velocity: float = 2.0) -> None:
         super().__init__()
 
         if width <= 0 or height <= 0:
@@ -62,20 +61,14 @@ class NavigationEnv(gym.Env):
         self.lidar_max_range = float(lidar_max_range)
         self.lidar_sample_step = float(lidar_sample_step)
 
-        self.action_space = spaces.Box(
-            low=np.array([0.0, -max_angular_velocity], dtype=np.float32),
-            high=np.array([max_linear_velocity, max_angular_velocity], dtype=np.float32),
-            dtype=np.float32,
-        )
+        self.action_space = spaces.Box(low=np.array([0.0, -max_angular_velocity], dtype=np.float32), high=np.array([max_linear_velocity, max_angular_velocity], dtype=np.float32), dtype=np.float32)
 
         max_goal_distance = math.hypot(self.width, self.height)
-        observation_low = np.concatenate([np.array([-max_goal_distance,-max_goal_distance,-1.0,-1.0,self.action_space.low[0],self.action_space.low[1],],
-                                                   dtype=np.float32, ),np.zeros(self.num_rays, dtype=np.float32)])
-        
-        observation_high = np.concatenate([np.array([max_goal_distance,max_goal_distance,1.0,1.0,self.action_space.high[0],self.action_space.high[1],],
-                                                    dtype=np.float32,),np.full(self.num_rays, self.lidar_max_range, dtype=np.float32),])
-        
-        self.observation_space = spaces.Box(low=observation_low,high=observation_high,dtype=np.float32,)
+        observation_low = np.concatenate([np.array([-max_goal_distance, -max_goal_distance, -1.0, -1.0, self.action_space.low[0], self.action_space.low[1]], dtype=np.float32),
+            np.zeros(self.num_rays, dtype=np.float32)])
+        observation_high = np.concatenate([np.array([max_goal_distance, max_goal_distance, 1.0, 1.0, self.action_space.high[0], self.action_space.high[1]], dtype=np.float32),
+            np.full(self.num_rays, self.lidar_max_range, dtype=np.float32)])
+        self.observation_space = spaces.Box(low=observation_low, high=observation_high, dtype=np.float32)
 
         self.pose = self.start_pose
         self.previous_action = np.zeros(2, dtype=np.float32)
@@ -86,16 +79,16 @@ class NavigationEnv(gym.Env):
         return math.hypot(goal_x - self.pose.x, goal_y - self.pose.y)
 
     def _get_obs(self) -> np.ndarray:
-        lidar_distances = scan_lidar(pose=self.pose,obstacles=self.obstacles,width=self.width,
-                                     height=self.height,num_rays=self.num_rays,max_range=self.lidar_max_range,sample_step=self.lidar_sample_step,)
-        return build_observation(pose=self.pose,goal=self.goal,
-                                 previous_action=self.previous_action,lidar_distances=lidar_distances,)
+        lidar_distances = scan_lidar(
+            pose=self.pose, obstacles=self.obstacles, width=self.width, height=self.height,
+            num_rays=self.num_rays, max_range=self.lidar_max_range, sample_step=self.lidar_sample_step,
+        )
+        return build_observation(pose=self.pose, goal=self.goal, previous_action=self.previous_action, lidar_distances=lidar_distances)
 
-    def _get_info(self,*,success: bool,collision: bool,distance_to_goal: float,) -> dict[str, bool | float | int]:
-        return {"success": success,"collision": collision,"distance_to_goal": distance_to_goal,"step_count": self.step_count,}
+    def _get_info(self, *, success: bool, collision: bool, distance_to_goal: float) -> dict[str, bool | float | int]:
+        return {"success": success, "collision": collision, "distance_to_goal": distance_to_goal, "step_count": self.step_count}
 
-    def reset(self,*,
-              seed: int | None = None,options: dict | None = None,) -> tuple[np.ndarray, dict]:
+    def reset(self, *, seed: int | None = None, options: dict | None = None) -> tuple[np.ndarray, dict]:
         super().reset(seed=seed)
 
         self.pose = self.start_pose
@@ -104,27 +97,27 @@ class NavigationEnv(gym.Env):
 
         distance_to_goal = self._distance_to_goal()
         observation = self._get_obs()
-        info = self._get_info(success=False,collision=False,distance_to_goal=distance_to_goal)
+        info = self._get_info(success=False, collision=False, distance_to_goal=distance_to_goal)
         return observation, info
 
-    def step(self,action: np.ndarray,) -> tuple[np.ndarray, float, bool, bool, dict]:
+    def step(self, action: np.ndarray) -> tuple[np.ndarray, float, bool, bool, dict]:
         action = np.asarray(action, dtype=np.float32)
         if action.shape != (2,):
             raise ValueError(f"action shape must be (2,), got {action.shape}")
         if not np.all(np.isfinite(action)):
             raise ValueError("action must contain only finite values")
 
-        executed_action = np.clip(action,self.action_space.low,self.action_space.high,).astype(np.float32)
+        executed_action = np.clip(action, self.action_space.low, self.action_space.high).astype(np.float32)
 
         old_distance = self._distance_to_goal()
-        twist = Twist2D(linear_velocity=float(executed_action[0]),angular_velocity=float(executed_action[1]))
+        twist = Twist2D(linear_velocity=float(executed_action[0]), angular_velocity=float(executed_action[1]))
         new_pose = integrate_pose(self.pose, twist, self.dt)
 
         self.pose = new_pose
         self.previous_action = executed_action.copy()
         self.step_count += 1
 
-        collision = robot_in_collision(pose=self.pose,radius=self.robot_radius,obstacles=self.obstacles,width=self.width,height=self.height)
+        collision = robot_in_collision(pose=self.pose, radius=self.robot_radius, obstacles=self.obstacles, width=self.width, height=self.height)
         new_distance = self._distance_to_goal()
         success = not collision and new_distance <= self.goal_radius
 
@@ -138,7 +131,7 @@ class NavigationEnv(gym.Env):
             reward -= 10.0
 
         observation = self._get_obs()
-        info = self._get_info(success=success,collision=collision,distance_to_goal=new_distance)
+        info = self._get_info(success=success, collision=collision, distance_to_goal=new_distance)
 
         return observation, float(reward), bool(terminated), bool(truncated), info
 

@@ -9,16 +9,29 @@ data:
 model:
   type: BC_Chunk
   hidden_dim: 256
+  dropout: 0.1
 
 training:
-  seed: 0
-  epochs: 50
+  seed: 1
+  epochs: 100
   learning_rate: 0.001
-  weight_decay: 0.000001
+  weight_decay: 0.0001
+  observation_noise: 0.0
+  early_stopping_patience: 12
+  early_stopping_min_delta: 0.0001
   device: auto
+  lr_scheduler:
+    factor: 0.5
+    patience: 3
+    threshold: 0.0001
+    threshold_mode: rel
+    cooldown: 0
+    min_lr: 0.000001
+    eps: 0.00000001
 
 evaluation:
-  action_horizon: 4
+  action_horizon: 2
 
 output:
   checkpoint_path: checkpoints/bc_chunk.pt
+  loss_curve_path: artifacts/bc_chunk_loss.png

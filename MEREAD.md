@@ -19,3 +19,7 @@
 添加一个地图种子重叠检测，以免训练和验证重合度太高。主线采用固定学习率Adam，1e-3的方便快速拟合，weight_decay=1e-6防止过拟合.还有个32样本的过拟合测试采用的1e-2
 
 又把原来的BC_1式的单步克隆方式改成滚动时域控制，比如在yaml中设置action_horizon: 4，那就是预测了下十六步动作后只执行四步然后再进行预测，形成闭环。相比于执行完所预测的动作平滑度更高，抗噪性更强
+
+用 np.intersect1d 检查训练和验证的 map_seed 数值重叠，重叠直接报错。优化器 AdamW；有 ReduceLROnPlateau 学习率调度器（factor 0.5、patience 3）
+每个 epoch：train_bc_chunk_epoch 用 mse_loss(predicted, target)，损失对 batch、全部 32 个时间步、2 个动作维取平均（不只是拟合第一个动作）；validate_bc_chunk 同样在归一化空间算 MSE
+训练结束会load 最佳checkpoint 并把权重加载回内存模型再返回

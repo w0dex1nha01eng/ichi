@@ -18,11 +18,7 @@ def scan_lidar(pose, obstacles, width, height, num_rays, max_range, sample_step)
             sample_y = pose.y + d * math.sin(angle)
 
             hit_wall = sample_x <= 0 or sample_x >= width or sample_y <= 0 or sample_y >= height
-            hit_obstacle = any(
-                rectangle.xmin <= sample_x <= rectangle.xmax
-                and rectangle.ymin <= sample_y <= rectangle.ymax
-                for rectangle in obstacles
-            )
+            hit_obstacle = any(rectangle.xmin <= sample_x <= rectangle.xmax and rectangle.ymin <= sample_y <= rectangle.ymax for rectangle in obstacles)
             if hit_wall or hit_obstacle:
                 lidar_distances[i] = d
                 break
